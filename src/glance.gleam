@@ -495,7 +495,7 @@ fn slurp(
   }
 }
 
-fn import_statement(
+pub fn import_statement(
   module: Module,
   attributes: List(Attribute),
   tokens: Tokens,
@@ -507,6 +507,14 @@ fn import_statement(
   let definition = Definition(list.reverse(attributes), import_)
   let module = Module(..module, imports: [definition, ..module.imports])
   Ok(#(module, tokens))
+}
+
+pub fn do_import_statement(tokens: Tokens) -> Result(#(Import, Tokens), Error) {
+  use #(module_name, tokens) <- result.try(module_name("", tokens))
+  use #(ts, vs, tokens) <- result.try(optional_unqualified_imports(tokens))
+  let #(alias, tokens) = optional_module_alias(tokens)
+  let import_ = Import(module_name, alias, ts, vs)
+  Ok(#(import_, tokens))
 }
 
 fn module_name(name: String, tokens: Tokens) -> Result(#(String, Tokens), Error) {
@@ -675,6 +683,33 @@ fn function_definition(
     Function(name, publicity, parameters, return_type, body, location)
   let module = push_function(module, attributes, function)
   Ok(#(module, tokens))
+}
+
+pub fn do_function_definition(
+  publicity: Publicity,
+  name: String,
+  start: Int,
+  tokens: Tokens,
+) -> Result(#(Function, Tokens), Error) {
+  // Parameters
+  use Position(end), tokens <- expect(t.LeftParen, tokens)
+  let result = comma_delimited([], tokens, function_parameter, t.RightParen)
+  use #(parameters, tokens) <- result.try(result)
+
+  // Return type
+  let result = optional_return_annotation(end, tokens)
+  use #(return_type, end, tokens) <- result.try(result)
+
+  // The function body
+  use #(body, end, tokens) <- result.try(case tokens {
+    [#(t.LeftBrace, _), ..tokens] -> do_block([], tokens)
+    _ -> Ok(#([], end, tokens))
+  })
+
+  let location = Span(start, end)
+  let function =
+    Function(name, publicity, parameters, return_type, body, location)
+  Ok(#(function, tokens))
 }
 
 fn optional_return_annotation(
@@ -1534,6 +1569,25 @@ fn const_definition(
   Ok(#(module, tokens))
 }
 
+pub fn do_const_definition(
+  publicity: Publicity,
+  tokens: Tokens,
+) -> Result(#(Constant, Tokens), Error) {
+  // name
+  use name, tokens <- expect_name(tokens)
+
+  // Optional type annotation
+  use #(annotation, tokens) <- result.try(optional_type_annotation(tokens))
+
+  // = Expression
+  use _, tokens <- expect(t.Equal, tokens)
+
+  use #(expression, tokens) <- result.try(expression(tokens))
+
+  let constant = Constant(name, publicity, annotation, expression)
+  Ok(#(constant, tokens))
+}
+
 fn optional_type_annotation(
   tokens: Tokens,
 ) -> Result(#(Option(Type), Tokens), Error) {
@@ -1577,7 +1631,7 @@ fn comma_delimited(
   }
 }
 
-fn type_definition(
+pub fn type_definition(
   module: Module,
   attributes: List(Attribute),
   publicity: Publicity,
