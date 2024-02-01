@@ -300,7 +300,7 @@ fn tokens(src: String) -> List(#(t.Token, Position)) {
   |> list.filter(fn(pair) { !is_whitespace(pair.0) })
 }
 
-fn is_whitespace(token: Token) -> Bool {
+pub fn is_whitespace(token: Token) -> Bool {
   case token {
     t.EmptyLine | t.CommentNormal | t.CommentModule | t.CommentDoc(_) -> True
     _ -> False
