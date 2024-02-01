@@ -26,6 +26,15 @@ pub type Module {
   )
 }
 
+pub type Declaration {
+  AttributeEnum(Attribute)
+  ImportEnum(Import)
+  CustomTypeEnum(CustomType)
+  TypeAliasEnum(TypeAlias)
+  ConstantEnum(Constant)
+  FunctionEnum(Function)
+}
+
 pub type Function {
   Function(
     name: String,
@@ -441,75 +450,98 @@ fn slurp(
   tokens: Tokens,
 ) -> Result(Module, Error) {
   case tokens {
+    [] -> Ok(module)
+    _ -> {
+      use #(declaration, tokens) <- result.try(declaration(tokens))
+      case declaration {
+        AttributeEnum(attribute) -> {
+          slurp(module, [attribute, ..attributes], tokens)
+        }
+
+        ImportEnum(import_) -> {
+          let definition = Definition(list.reverse(attributes), import_)
+          let module = Module(..module, imports: [definition, ..module.imports])
+          slurp(module, [], tokens)
+        }
+
+        CustomTypeEnum(ct) -> {
+          let module = push_custom_type(module, attributes, ct)
+          slurp(module, [], tokens)
+        }
+
+        TypeAliasEnum(alias) -> {
+          let module = push_type_alias(module, attributes, alias)
+          slurp(module, [], tokens)
+        }
+
+        ConstantEnum(constant) -> {
+          let module = push_constant(module, attributes, constant)
+          slurp(module, [], tokens)
+        }
+
+        FunctionEnum(function) -> {
+          let module = push_function(module, attributes, function)
+          slurp(module, [], tokens)
+        }
+      }
+    }
+  }
+}
+
+pub fn declaration(tokens: Tokens) -> Result(#(Declaration, Tokens), Error) {
+  case tokens {
     [#(t.At, _), ..tokens] -> {
-      use #(attribute, tokens) <- result.try(attribute(tokens))
-      slurp(module, [attribute, ..attributes], tokens)
+      use #(attribute, tokens) <- result.map(attribute(tokens))
+      #(AttributeEnum(attribute), tokens)
     }
 
     [#(t.Import, _), ..tokens] -> {
-      let result = import_statement(module, attributes, tokens)
-      use #(module, tokens) <- result.try(result)
-      slurp(module, [], tokens)
+      let result = import_statement(tokens)
+      use #(import_, tokens) <- result.map(result)
+      #(ImportEnum(import_), tokens)
     }
     [#(t.Pub, _), #(t.Type, _), ..tokens] -> {
-      let result = type_definition(module, attributes, Public, False, tokens)
-      use #(module, tokens) <- result.try(result)
-      slurp(module, [], tokens)
+      let result = type_definition(Public, False, tokens)
+      use #(declaration, tokens) <- result.map(result)
+      #(declaration, tokens)
     }
     [#(t.Pub, _), #(t.Opaque, _), #(t.Type, _), ..tokens] -> {
-      let result = type_definition(module, attributes, Public, True, tokens)
-      use #(module, tokens) <- result.try(result)
-      slurp(module, [], tokens)
+      let result = type_definition(Public, True, tokens)
+      use #(declaration, tokens) <- result.map(result)
+      #(declaration, tokens)
     }
     [#(t.Type, _), ..tokens] -> {
-      let result = type_definition(module, attributes, Private, False, tokens)
-      use #(module, tokens) <- result.try(result)
-      slurp(module, [], tokens)
+      let result = type_definition(Private, False, tokens)
+      use #(declaration, tokens) <- result.map(result)
+      #(declaration, tokens)
     }
     [#(t.Pub, _), #(t.Const, _), ..tokens] -> {
-      let result = const_definition(module, attributes, Public, tokens)
-      use #(module, tokens) <- result.try(result)
-      slurp(module, [], tokens)
+      let result = const_definition(Public, tokens)
+      use #(constant, tokens) <- result.map(result)
+      #(ConstantEnum(constant), tokens)
     }
     [#(t.Const, _), ..tokens] -> {
-      let result = const_definition(module, attributes, Private, tokens)
-      use #(module, tokens) <- result.try(result)
-      slurp(module, [], tokens)
+      let result = const_definition(Private, tokens)
+      use #(constant, tokens) <- result.map(result)
+      #(ConstantEnum(constant), tokens)
     }
     [#(t.Pub, start), #(t.Fn, _), #(t.Name(name), _), ..tokens] -> {
       let Position(start) = start
-      let result =
-        function_definition(module, attributes, Public, name, start, tokens)
-      use #(module, tokens) <- result.try(result)
-      slurp(module, [], tokens)
+      let result = function_definition(Public, name, start, tokens)
+      use #(function, tokens) <- result.map(result)
+      #(FunctionEnum(function), tokens)
     }
     [#(t.Fn, start), #(t.Name(name), _), ..tokens] -> {
       let Position(start) = start
-      let result =
-        function_definition(module, attributes, Private, name, start, tokens)
-      use #(module, tokens) <- result.try(result)
-      slurp(module, [], tokens)
+      let result = function_definition(Private, name, start, tokens)
+      use #(function, tokens) <- result.map(result)
+      #(FunctionEnum(function), tokens)
     }
-    [] -> Ok(module)
     tokens -> unexpected_error(tokens)
   }
 }
 
-pub fn import_statement(
-  module: Module,
-  attributes: List(Attribute),
-  tokens: Tokens,
-) -> Result(#(Module, Tokens), Error) {
-  use #(module_name, tokens) <- result.try(module_name("", tokens))
-  use #(ts, vs, tokens) <- result.try(optional_unqualified_imports(tokens))
-  let #(alias, tokens) = optional_module_alias(tokens)
-  let import_ = Import(module_name, alias, ts, vs)
-  let definition = Definition(list.reverse(attributes), import_)
-  let module = Module(..module, imports: [definition, ..module.imports])
-  Ok(#(module, tokens))
-}
-
-pub fn do_import_statement(tokens: Tokens) -> Result(#(Import, Tokens), Error) {
+pub fn import_statement(tokens: Tokens) -> Result(#(Import, Tokens), Error) {
   use #(module_name, tokens) <- result.try(module_name("", tokens))
   use #(ts, vs, tokens) <- result.try(optional_unqualified_imports(tokens))
   let #(alias, tokens) = optional_module_alias(tokens)
@@ -656,13 +688,11 @@ fn unqualified_imports(
 }
 
 fn function_definition(
-  module: Module,
-  attributes: List(Attribute),
   publicity: Publicity,
   name: String,
   start: Int,
   tokens: Tokens,
-) -> Result(#(Module, Tokens), Error) {
+) -> Result(#(Function, Tokens), Error) {
   // Parameters
   use Position(end), tokens <- expect(t.LeftParen, tokens)
   let result = comma_delimited([], tokens, function_parameter, t.RightParen)
@@ -681,8 +711,7 @@ fn function_definition(
   let location = Span(start, end)
   let function =
     Function(name, publicity, parameters, return_type, body, location)
-  let module = push_function(module, attributes, function)
-  Ok(#(module, tokens))
+  Ok(#(function, tokens))
 }
 
 pub fn do_function_definition(
@@ -1548,11 +1577,9 @@ fn function_parameter(
 }
 
 fn const_definition(
-  module: Module,
-  attributes: List(Attribute),
   publicity: Publicity,
   tokens: Tokens,
-) -> Result(#(Module, Tokens), Error) {
+) -> Result(#(Constant, Tokens), Error) {
   // name
   use name, tokens <- expect_name(tokens)
 
@@ -1565,8 +1592,7 @@ fn const_definition(
   use #(expression, tokens) <- result.try(expression(tokens))
 
   let constant = Constant(name, publicity, annotation, expression)
-  let module = push_constant(module, attributes, constant)
-  Ok(#(module, tokens))
+  Ok(#(constant, tokens))
 }
 
 pub fn do_const_definition(
@@ -1632,44 +1658,41 @@ fn comma_delimited(
 }
 
 pub fn type_definition(
-  module: Module,
-  attributes: List(Attribute),
   publicity: Publicity,
   opaque_: Bool,
   tokens: Tokens,
-) -> Result(#(Module, Tokens), Error) {
+) -> Result(#(Declaration, Tokens), Error) {
   // Name(a, b, c)
   use name, tokens <- expect_upper_name(tokens)
   use #(parameters, tokens) <- result.try(optional_type_parameters(tokens))
 
   case tokens {
     [#(t.Equal, _), ..tokens] -> {
-      type_alias(module, attributes, name, parameters, publicity, tokens)
+      let result = type_alias(name, parameters, publicity, tokens)
+      use #(alias, tokens) <- result.map(result)
+      #(TypeAliasEnum(alias), tokens)
     }
     [#(t.LeftBrace, _), ..tokens] -> {
-      module
-      |> custom_type(attributes, name, parameters, publicity, opaque_, tokens)
+      let result = custom_type(name, parameters, publicity, opaque_, tokens)
+      use #(ct, tokens) <- result.map(result)
+      #(CustomTypeEnum(ct), tokens)
     }
     _ -> {
       let ct = CustomType(name, publicity, opaque_, parameters, [])
-      let module = push_custom_type(module, attributes, ct)
-      Ok(#(module, tokens))
+      Ok(#(CustomTypeEnum(ct), tokens))
     }
   }
 }
 
 fn type_alias(
-  module: Module,
-  attributes: List(Attribute),
   name: String,
   parameters: List(String),
   publicity: Publicity,
   tokens: Tokens,
-) -> Result(#(Module, Tokens), Error) {
+) -> Result(#(TypeAlias, Tokens), Error) {
   use #(type_, tokens) <- result.try(type_(tokens))
   let alias = TypeAlias(name, publicity, parameters, type_)
-  let module = push_type_alias(module, attributes, alias)
-  Ok(#(module, tokens))
+  Ok(#(alias, tokens))
 }
 
 fn type_(tokens: Tokens) -> Result(#(Type, Tokens), Error) {
@@ -1726,21 +1749,18 @@ fn tuple_type(tokens: Tokens) -> Result(#(Type, Tokens), Error) {
 }
 
 fn custom_type(
-  module: Module,
-  attributes: List(Attribute),
   name: String,
   parameters: List(String),
   publicity: Publicity,
   opaque_: Bool,
   tokens: Tokens,
-) -> Result(#(Module, Tokens), Error) {
+) -> Result(#(CustomType, Tokens), Error) {
   // <variant>.. }
   let ct = CustomType(name, publicity, opaque_, parameters, [])
   use #(ct, tokens) <- result.try(variants(ct, tokens))
 
   // Continue to the next statement
-  let module = push_custom_type(module, attributes, ct)
-  Ok(#(module, tokens))
+  Ok(#(ct, tokens))
 }
 
 fn optional_type_parameters(
